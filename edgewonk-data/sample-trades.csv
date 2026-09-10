@@ -1,0 +1,6 @@
+Trade #,Date/Time Open,Date/Time Close,Symbol,Direction,Entry Price,Exit Price,Stop Loss,Take Profit,P&L,R-Multiple,Setup,Mistakes,Emotions,Rating,Notes
+1,2026-09-01 09:35,2026-09-01 09:52,ES,Long,5520.25,5524.50,5517.75,5526.00,212.50,1.7,Opening Range Breakout,,Confident,4,Clean breakout above OR high. Held for target.
+2,2026-09-01 10:15,2026-09-01 10:28,NQ,Short,19450.00,19425.00,19475.00,19410.00,500.00,1.0,VWAP Rejection,,Calm,3,Rejection at VWAP. Took partial at 1R.
+3,2026-09-02 09:31,2026-09-02 09:38,ES,Long,5515.00,5511.50,5512.50,5520.00,-175.00,-1.0,Opening Range Breakout,Chased Entry,FOMO,1,Entered too early before confirmation. Hit stop.
+4,2026-09-02 10:45,2026-09-02 11:10,NQ,Long,19380.00,19420.00,19360.00,19430.00,800.00,2.0,Support Bounce,,Patient,5,Waited for double bottom at support. Great entry.
+5,2026-09-03 09:40,2026-09-03 10:05,ES,Short,5530.00,5535.50,5533.00,5522.00,-275.00,-1.8,VWAP Rejection,Moved Stop,Anxious,2,Moved stop closer before getting stopped out. Original stop would have held.
