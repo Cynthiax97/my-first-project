@@ -22,7 +22,7 @@
 
   if (window.__SLG_CRON__) { console.log('[cron-engine] already loaded'); return; }
 
-  var VERSION = '1.0.0';
+  var VERSION = '1.1.0';
   var TAB_ID = 'tab_' + Math.random().toString(36).slice(2, 10);
 
   // ---- storage keys --------------------------------------------------------
@@ -470,18 +470,101 @@
   }
 
   /* =========================================================================
-   * postMessage BRIDGE — the sandboxed `cron` plugin's only way in
+   * TRANSPORT LAYER — how the `cron` plugin reaches this engine
+   *
+   * HISTORY (why there are four of these):
+   *   v1.0 assumed TypingMind ran plugin JS in an iframe with
+   *   sandbox="allow-scripts allow-modals", because that string appears in the
+   *   bundle. That was wrong — the string belongs to something else (most
+   *   likely the render_html preview). Runtime investigation showed NO iframe,
+   *   blob, worker or fetch is created during a plugin call, and the plugin
+   *   runner chunk contains AsyncFunction constructor calls. So plugin code
+   *   runs in `new AsyncFunction(...)` with a stubbed global: `window.parent`
+   *   does not reach this page, and v1.0's postMessage went nowhere.
+   *
+   *   Rather than swap one guess for another, the engine now listens on every
+   *   channel that could possibly work, and the plugin races all of them and
+   *   reports which one won. Diagnosis and fix in one shipment.
+   *
+   *   T0 direct      — plugin escapes its shadowed scope via
+   *                    Function('return globalThis')() and calls handle()
+   *                    synchronously. Fastest; no listener needed here.
+   *   T1 BroadcastChannel — works across windows, iframes, workers and
+   *                    AsyncFunction scopes on the same origin.
+   *   T2 postMessage — kept from v1.0; harmless, and covers a real iframe.
+   *   T3 localStorage queue — last resort for a sandbox with storage but no
+   *                    BroadcastChannel. Polled, so slowest.
    * ====================================================================== */
-  window.addEventListener('message', function (ev) {
-    var d = ev.data;
-    if (!d || d.__slg_cron !== 'request' || !d.rid) return;
+  var CHANNEL = 'slg_cron_v1';
+  var K_REQ = 'SLG_CRON_REQ';
+  var K_RES = 'SLG_CRON_RES';
+
+  function answer(d) {
+    // Shared by every transport: run the command, return a tagged reply.
     var reply;
     try { reply = handle(d.cmd || {}); }
     catch (e) { reply = { error: 'engine exception: ' + (e && e.message || e) }; }
+    return { __slg_cron: 'response', rid: d.rid, result: reply };
+  }
+
+  // ---- T2: postMessage (window) -------------------------------------------
+  window.addEventListener('message', function (ev) {
+    var d = ev.data;
+    if (!d || d.__slg_cron !== 'request' || !d.rid) return;
     try {
-      (ev.source || window).postMessage({ __slg_cron: 'response', rid: d.rid, result: reply }, '*');
-    } catch (e) { console.warn('[cron-engine] reply failed', e); }
+      (ev.source || window).postMessage(answer(d), '*');
+    } catch (e) { console.warn('[cron-engine] postMessage reply failed', e); }
   });
+
+  // ---- T1: BroadcastChannel ----------------------------------------------
+  // Note: a BroadcastChannel never receives its own posts, but DOES receive
+  // posts from any other channel object of the same name — including one in
+  // the same window. So engine<->plugin works even in a single tab.
+  var bc = null;
+  try {
+    bc = new BroadcastChannel(CHANNEL);
+    bc.onmessage = function (ev) {
+      var d = ev.data;
+      if (!d || d.__slg_cron !== 'request' || !d.rid) return;
+      try { bc.postMessage(answer(d)); }
+      catch (e) { console.warn('[cron-engine] BC reply failed', e); }
+    };
+    console.log('[cron-engine] BroadcastChannel armed on ' + CHANNEL);
+  } catch (e) {
+    console.warn('[cron-engine] BroadcastChannel unavailable:', e);
+  }
+
+  // ---- T3: localStorage request queue ------------------------------------
+  // The plugin appends a request; we answer into K_RES keyed by rid. Polled
+  // fast enough to feel instant, cheap enough to ignore.
+  var seenRids = {};
+  function drainStorageQueue() {
+    var q;
+    try { q = JSON.parse(localStorage.getItem(K_REQ) || '[]'); } catch (e) { return; }
+    if (!q.length) return;
+    var responses;
+    try { responses = JSON.parse(localStorage.getItem(K_RES) || '{}'); } catch (e) { responses = {}; }
+    var handled = false;
+    for (var i = 0; i < q.length; i++) {
+      var d = q[i];
+      if (!d || !d.rid || seenRids[d.rid]) continue;
+      seenRids[d.rid] = nowMs();
+      responses[d.rid] = answer(d);
+      handled = true;
+    }
+    if (handled) {
+      // Drop anything older than 60s so these keys can't grow without bound.
+      var cutoff = nowMs() - 60000;
+      for (var k in responses) if (responses[k] && responses[k].__ts && responses[k].__ts < cutoff) delete responses[k];
+      for (var r in seenRids) if (seenRids[r] < cutoff) delete seenRids[r];
+      try {
+        localStorage.setItem(K_RES, JSON.stringify(responses));
+        localStorage.setItem(K_REQ, '[]');
+      } catch (e) { /* quota — nothing useful to do */ }
+    }
+  }
+  setInterval(drainStorageQueue, 250);
+  window.addEventListener('storage', function (e) { if (e.key === K_REQ) drainStorageQueue(); });
 
   /* =========================================================================
    * UI PANEL
@@ -692,10 +775,21 @@
     if (tries++ < 50) setTimeout(waitForBody, 200);
   })();
 
-  window.__SLG_CRON__ = {
+  var API = {
     version: VERSION, handle: handle, tick: tick, open: openPanel,
     _jobs: jobs, _prompts: prompts, _settings: settings, _log: function () { return load(K_LOG, []); }
   };
+  window.__SLG_CRON__ = API;
+  // Also pin it to the real global under a second name. If the plugin sandbox
+  // shadows `window` but can still reach the page global via
+  // Function('return globalThis')(), this is what it grabs (transport T0).
+  try {
+    var G = Function('return globalThis')();
+    G.__SLG_CRON__ = API;
+    G.__SLG_CRON_ENGINE__ = API;
+  } catch (e) { /* non-fatal: T1-T3 still available */ }
+
   console.log('[cron-engine] v' + VERSION + ' loaded. Paused=' + settings().global_paused +
-              '. Console API: window.__SLG_CRON__');
+              '. Transports: direct, BroadcastChannel(' + (bc ? 'on' : 'off') +
+              '), postMessage, localStorage. Console API: window.__SLG_CRON__');
 })();
